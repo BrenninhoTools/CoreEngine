@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+def sdlDir = rootProject.file('../third_party/SDL')
+
+android {
+    namespace 'com.coreengine.sandbox'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.coreengine.sandbox'
+        minSdk 21
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared',
+                        '-DCOREENGINE_SDL_DIR=' + sdlDir.absolutePath
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('../../CMakeLists.txt')
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java', new File(sdlDir, 'android-project/app/src/main/java')]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}

@@ -1,0 +1,218 @@
+name: main
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SDL_TAG: release-3.2.10
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            run: true
+          - arch: ARM64
+            run: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.arch }} -DCOREENGINE_SDL_TAG=${{ env.SDL_TAG }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run
+        if: ${{ matrix.run }}
+        shell: pwsh
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+        run: |
+          $sandbox = Start-Process -FilePath "build/bin/Release/CoreEngineSandbox.exe" -ArgumentList "--frames", "120" -Wait -PassThru
+          if ($sandbox.ExitCode -ne 0) { exit $sandbox.ExitCode }
+          $project = Join-Path $env:RUNNER_TEMP "SmokeProject"
+          $editor = Start-Process -FilePath "build/bin/Release/CoreEditor.exe" -ArgumentList "--frames", "120", "--open", $project -Wait -PassThru
+          if ($editor.ExitCode -ne 0) { exit $editor.ExitCode }
+          if (-not (Test-Path (Join-Path $project "project.core"))) { exit 1 }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path build/bin/Release/CoreEngineSandbox.exe, build/bin/Release/CoreEditor.exe -DestinationPath dist/CoreEngine-windows-${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoreEngine-windows-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config libasound2-dev libpulse-dev libsndio-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev \
+            libgl1-mesa-dev libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev \
+            libudev-dev libibus-1.0-dev libwayland-dev wayland-protocols \
+            libdecor-0-dev libpipewire-0.3-dev
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCOREENGINE_SDL_TAG=${{ env.SDL_TAG }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+        run: |
+          ./build/bin/CoreEngineSandbox --frames 120
+          ./build/bin/CoreEditor --frames 120 --open "$RUNNER_TEMP/SmokeProject"
+          test -f "$RUNNER_TEMP/SmokeProject/project.core"
+
+      - name: Package
+        run: |
+          mkdir -p dist/CoreEngine-linux-x64
+          cp build/bin/CoreEngineSandbox build/bin/CoreEditor dist/CoreEngine-linux-x64/
+          cp assets/icon/icon.png dist/CoreEngine-linux-x64/CoreEngine.png
+          tar -C dist -czf dist/CoreEngine-linux-x64.tar.gz CoreEngine-linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoreEngine-linux-x64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCOREENGINE_SDL_TAG=${{ env.SDL_TAG }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Sign
+        run: |
+          codesign --force --deep --sign - "build/bin/CoreEngineSandbox.app"
+          codesign --force --deep --sign - "build/bin/CoreEditor.app"
+
+      - name: Run
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_RENDER_DRIVER: software
+        run: |
+          ./build/bin/CoreEngineSandbox.app/Contents/MacOS/CoreEngineSandbox --frames 120
+          ./build/bin/CoreEditor.app/Contents/MacOS/CoreEditor --frames 120 --open "$RUNNER_TEMP/SmokeProject"
+          test -f "$RUNNER_TEMP/SmokeProject/project.core"
+
+      - name: Package
+        run: |
+          mkdir -p dist/CoreEngine-macos-universal
+          cp -R build/bin/CoreEngineSandbox.app build/bin/CoreEditor.app dist/CoreEngine-macos-universal/
+          ditto -c -k --keepParent dist/CoreEngine-macos-universal dist/CoreEngine-macos-universal.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoreEngine-macos-universal
+          path: dist/*.zip
+          if-no-files-found: error
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Fetch SDL
+        run: git clone --depth 1 --branch ${{ env.SDL_TAG }} https://github.com/libsdl-org/SDL.git third_party/SDL
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/CoreEngine-android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoreEngine-android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCOREENGINE_SDL_TAG=${{ env.SDL_TAG }}
+
+      - name: Build
+        run: |
+          cmake --build build --config Release --target coreengine_sandbox -- \
+            -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Package
+        run: |
+          APP="$(find build -type d -name 'CoreEngineSandbox.app' -path '*Release-iphoneos*' | head -n 1)"
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          (cd dist && zip -qry CoreEngine-ios-unsigned.ipa Payload && rm -rf Payload)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CoreEngine-ios
+          path: dist/*.ipa
+          if-no-files-found: error

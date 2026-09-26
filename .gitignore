@@ -30,3 +30,23 @@
 *.exe
 *.out
 *.app
+
+# Build output
+build/
+build-*/
+out/
+.vs/
+CMakeUserPresets.json
+
+# Fetched dependencies
+third_party/SDL/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+*.apk
+*.aab
+*.ipa
